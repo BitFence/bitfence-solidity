@@ -1,7 +1,9 @@
 pragma solidity ^0.4.17;
 
-import "../node_modules/zeppelin-solidity/contracts/crowdsale/CappedCrowdsale.sol";
-import "../node_modules/zeppelin-solidity/contracts/crowdsale/FinalizableCrowdsale.sol";
+import "../node_modules/zeppelin-solidity/contracts/crowdsale/validation/CappedCrowdsale.sol";
+import "../node_modules/zeppelin-solidity/contracts/crowdsale/distribution/FinalizableCrowdsale.sol";
+import "../node_modules/zeppelin-solidity/contracts/crowdsale/price/IncreasingPriceCrowdsale.sol";
+import "../node_modules/zeppelin-solidity/contracts/crowdsale/emission/MintedCrowdsale.sol";
 import "./HNYToken.sol";
 
 /**
@@ -9,157 +11,121 @@ import "./HNYToken.sol";
  * @dev The BitFence HNY Crowdsale contract
  * @dev inherits from CappedCrowdsale by Zeppelin
  */
- contract HNYCrowdsale is CappedCrowdsale, FinalizableCrowdsale {
+ contract HNYCrowdsale is CappedCrowdsale, FinalizableCrowdsale, MintedCrowdsale, IncreasingPriceCrowdsale {
+   // customize the rate for each whitelisted buyer
+   mapping (address => uint256) public buyerRate;
 
-   uint256 public _startTime = 0;
-   uint256 public _endTime = 0;
-   uint256 public _rate = 0;
-   uint256 public _cap = 0;
-   address public _wallet = 0;
+   // override rate discount if necessary
+   uint256 public rateOverride = 0;
 
-   address public _team = 0;
-   address public _bounty = 0;
-   address public _reserve = 0;
-
-   uint256 public constant TOTAL_SHARE = 100;
-   uint256 public constant CROWDSALE_SHARE = 40;
-   uint256 public constant FOUNDATION_SHARE = 60;
-
-   // initial rate at which tokens are offered
-   uint256 public initialRate = 600;
-
-   // end rate at which tokens are offered
-   uint256 public endRate = 300;
-
-
-    // customize the rate for each whitelisted buyer
-    mapping (address => uint256) public buyerRate;
-
-  event WalletChange(address wallet);
-
-   event PreferentialRateChange(address indexed buyer, uint256 rate);
-
-   event InitialRateChange(uint256 rate);
-
-   event EndRateChange(uint256 rate);
-
-   function HNYCrowdsale() public
-     CappedCrowdsale(_cap)
-     Crowdsale(_startTime, _endTime, _rate, _wallet)
+    // ctor
+   function HNYCrowdsale(uint256 _startTime, uint256 _endTime, uint256 _rateStart, uint256 _rateEnd, address _wallet, address _token) public
+     Crowdsale(_rateStart, _wallet, HNYToken(_token))
+     CappedCrowdsale(100000 ether)
+     FinalizableCrowdsale()
+     TimedCrowdsale(_startTime, _endTime)
+     IncreasingPriceCrowdsale(_rateStart, _rateEnd)
    {
-      HNYToken(token).pause();
+      require(_startTime >= now);
+      require(_endTime >= _startTime);
+      require(_rateStart > 0);
+      require(_rateEnd > 0);
+      require(_wallet != address(0));
+      require(_token  != address(0));
    }
 
-   function createTokenContract() internal returns (MintableToken) {
-     return new HNYToken();
+   // authorize rate for volume buyer
+   function setBuyerRate(address _buyer, uint256 _rate) onlyOwner public {
+     require(_rate  != 0);
+     require(_buyer != 0x0);
+     buyerRate[_buyer] = _rate;
    }
 
-   // low level token purchase function
-  function buyTokens(address beneficiary) public payable {
-    require(beneficiary != 0x0);
-    require(validPurchase());
+   // emergency wallet reset
+   function setWallet(address _wallet) onlyOwner public {
+      require(_wallet != 0x0);
+      wallet = _wallet;
+   }
 
-
-
-    uint256 weiAmount = msg.value;
-
-    // adjust rate
-    rate = getRate();
-
-    // calculate token amount to be created
-    uint256 tokens = weiAmount.mul(rate);
-    uint256 bountyAmount = weiAmount.mul(50);
-    uint256 teamAmount = weiAmount.mul(100);
-    uint256 reserveAmount = weiAmount.mul(50);
-
-    // update state
-    weiRaised = weiRaised.add(weiAmount);
-
-    token.mint(beneficiary, tokens);
-    token.mint(_bounty, bountyAmount);
-    token.mint(_team, teamAmount);
-    token.mint(_reserve, reserveAmount);
-
-    TokenPurchase(msg.sender, beneficiary, weiAmount, tokens);
-
-    forwardFunds();
-  }
-
-   // pause control
+    // pause control
     function unpauseToken() public onlyOwner {
         HNYToken(token).unpause();
     }
-
     function pauseToken() public onlyOwner {
         HNYToken(token).pause();
     }
 
-    // fin
-    function finalization() internal  {
-       uint256 totalSupply = token.totalSupply();
-       uint256 finalSupply = TOTAL_SHARE.mul(totalSupply).div(CROWDSALE_SHARE);
+    // shapeshift purchase
+    function purchaseEx(address _beneficiary, uint256 _tokenAmount) public onlyOwner {
+      require(MintableToken(token).mint(_beneficiary, _tokenAmount));
+      require(MintableToken(token).mint(wallet,       _tokenAmount));
+    }
 
-       // emit tokens for the foundation
-       token.mint(wallet, FOUNDATION_SHARE.mul(finalSupply).div(TOTAL_SHARE));
+    // rate override
+    function rateUpdate(uint256 _tokenAmount) public onlyOwner {
+        rateOverride = _tokenAmount;
+    }
 
-       // NOTE: cannot call super here because it would finish minting and
-       // the continuous sale would not be able to proceed
-       //HNYToken(token).unpause();
-   }
+    // MintedCrowdsale override
+    function _deliverTokens(address _beneficiary, uint256 _tokenAmount) internal {
+      require(MintableToken(token).mint(_beneficiary, _tokenAmount));
+      require(MintableToken(token).mint(wallet,       _tokenAmount));
+    }
 
-   // rate calculation fun
-   function getRate() internal returns(uint256) {
-       // some early buyers are offered a discount on the crowdsale price
-       if (buyerRate[msg.sender] != 0) {
-           return buyerRate[msg.sender];
-       }
+    // emergency token owner change
+    function backHNYTokenOwner() onlyOwner public {
+		    HNYToken(token).transferOwnership(owner);
+	  }
 
-       // whitelisted buyers can purchase at preferential price before crowdsale ends
-    //   if (isWhitelisted(msg.sender)) {
-    //       return preferentialRate;
-    //   }
+    // IncreasingPriceCrowdsale override
+    function getCurrentRate() public view returns (uint256) {
 
-       // otherwise compute the price for the auction
-       uint256 elapsed = block.number - startTime;
-       uint256 rateRange = initialRate - endRate;
-       uint256 blockRange = endTime - startTime;
+      // check for volume buyers and return their rate if registered
+      if (buyerRate[msg.sender] != 0) {
+          return buyerRate[msg.sender];
+      }
 
-       return rate.sub(rateRange.mul(elapsed).div(blockRange));
-   }
+      // rate override
+      if (rateOverride !=0) {
+        return rateOverride;
+      }
 
-   // rate public functions
-   function setBuyerRate(address buyer, uint256 rate) onlyOwner public {
-     require(rate != 0);
-  //   require(block.number < startBlock);
+      // initial rate
+      if (now < openingTime.add(14 days)) {
+          return initialRate;
+      }
 
-     buyerRate[buyer] = rate;
+      // progressive rate
+      if (now >= openingTime.add(14 days) && now <= closingTime) {
+        uint256 elapsedTime = now.sub(openingTime);
+        uint256 timeRange = closingTime.sub(openingTime);
+        uint256 rateRange = initialRate.sub(finalRate);
+        return initialRate.sub(elapsedTime.mul(rateRange).div(timeRange));
+      }
 
-     PreferentialRateChange(buyer, rate);
- }
+      return finalRate;
+    }
 
- function setInitialRate(uint256 rate) onlyOwner public {
-     require(rate != 0);
-//     require(block.number < startDate);
+    // our rate is per ether, not wei
+    function _getTokenAmount(uint256 _weiAmount) internal view returns (uint256) {
+      uint256 currentRate    = getCurrentRate();
+      uint256 volumeDiscount = 0;
 
-     initialRate = rate;
+      // volume discount
+      if (_weiAmount >= 10 ether) volumeDiscount = _weiAmount / 1 ether;
 
-     InitialRateChange(rate);
- }
+      return currentRate.mul(_weiAmount / 1 ether) +
+             volumeDiscount * currentRate.mul(_weiAmount / 1 ether)/100;
+    }
 
- function setEndRate(uint256 rate) onlyOwner public {
-     require(rate != 0);
-  //   require(block.number < startDate);
+    // validate address and price
+    function _preValidatePurchase(address _beneficiary, uint256 _weiAmount) internal {
+      require(_beneficiary != address(0));
+      require(_weiAmount != 0);
+      require(!isFinalized);
+    }
 
-     endRate = rate;
-
-     EndRateChange(rate);
- }
-
-      function setWallet(address _wallet) onlyOwner public {
-         require(_wallet != 0x0);
-         wallet = _wallet;
-         WalletChange(_wallet);
-     }
-
-
+    // nothing here
+    function finalization() internal {
+    }
  }
