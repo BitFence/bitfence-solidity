@@ -6,6 +6,9 @@
   "directories": {
     "test": "test"
   },
+  "dependencies": {
+    "zeppelin-solidity": "1.7.0"
+  },
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
