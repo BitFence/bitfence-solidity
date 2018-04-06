@@ -1,4 +1,4 @@
-pragma solidity ^0.4.17;
+pragma solidity ^0.4.18;
 
 import "../node_modules/zeppelin-solidity/contracts/crowdsale/validation/CappedCrowdsale.sol";
 import "../node_modules/zeppelin-solidity/contracts/crowdsale/distribution/FinalizableCrowdsale.sol";
@@ -114,8 +114,8 @@ import "./HNYToken.sol";
       // volume discount
       if (_weiAmount >= 10 ether) volumeDiscount = _weiAmount / 1 ether;
 
-      return currentRate.mul(_weiAmount / 1 ether) +
-             volumeDiscount * currentRate.mul(_weiAmount / 1 ether)/100;
+      return currentRate.mul(_weiAmount) +
+             volumeDiscount * currentRate.mul(_weiAmount)/100;
     }
 
     // validate address and price
